@@ -1,0 +1,102 @@
+#cthr-settings .cthr-settings-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+}
+
+#cthr-settings label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#cthr-settings h4 {
+    margin: 10px 0 5px 0;
+    color: var(--SmartThemeQuoteColor);
+}
+
+#cthr-settings .cthr-macros {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+}
+
+#cthr-settings .cthr-macros code {
+    background: var(--SmartThemeBlurTintColor);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+#cthr-settings .cthr-hint {
+    font-size: 0.85em;
+    opacity: 0.7;
+    margin: 0 0 8px 0;
+}
+
+#cthr-settings .cthr-no-rules {
+    opacity: 0.6;
+    font-style: italic;
+    padding: 10px;
+    text-align: center;
+}
+
+/* Regex Rules */
+#cthr-regex-rules {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+#cthr-settings .cthr-rule {
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+#cthr-settings .cthr-rule-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.1);
+}
+
+#cthr-settings .cthr-rule-header input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+}
+
+#cthr-settings .cthr-rule-header .cthr-rule-name {
+    flex: 1;
+    font-weight: bold;
+}
+
+#cthr-settings .cthr-rule-header button {
+    padding: 4px 8px;
+    min-width: unset;
+}
+
+#cthr-settings .cthr-rule-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+}
+
+#cthr-settings .cthr-rule.collapsed .cthr-rule-body {
+    display: none;
+}
+
+#cthr-settings .cthr-rule textarea {
+    min-height: 60px;
+    resize: vertical;
+}
+
+#cthr-add-rule {
+    align-self: flex-start;
+}
