@@ -13,6 +13,7 @@ const defaultSettings = {
     assistantHeader: "## Teacher's Turn",
     xmlUserTag: "student",
     xmlAssistantTag: "teacher",
+    skipLastAssistant: true,  // NEW: skip last assistant message
     regexRules: []
 };
 
@@ -39,6 +40,22 @@ function saveAllSettings() {
     saveSettingsDebounced();
 }
 
+// Get chat history with optional skip logic
+function getChatHistory() {
+    const config = getConfig();
+    let messages = [...chat];
+
+    // Skip last assistant message if enabled
+    if (config.skipLastAssistant && messages.length > 0) {
+        const lastMsg = messages[messages.length - 1];
+        if (!lastMsg.is_user) {
+            messages = messages.slice(0, -1);
+        }
+    }
+
+    return messages;
+}
+
 // Apply all regex rules to text
 function applyRegexRules(text) {
     const rules = getConfig().regexRules || [];
@@ -51,7 +68,6 @@ function applyRegexRules(text) {
             const regex = new RegExp(rule.findRegex, 'g');
             result = result.replace(regex, rule.replaceWith || '');
 
-            // Apply trim out (each line is a separate trim)
             if (rule.trimOut) {
                 const trimPatterns = rule.trimOut.split('\n').filter(p => p.trim());
                 for (const pattern of trimPatterns) {
@@ -71,12 +87,10 @@ function applyRegexRules(text) {
     return result;
 }
 
-// Generate a unique ID
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
-// Render the regex rules list
 function renderRegexRules() {
     const container = $("#cthr-regex-rules");
     container.empty();
@@ -119,7 +133,6 @@ function renderRegexRules() {
         container.append(ruleHtml);
     }
 
-    // Bind events
     $(".cthr-rule-enabled").off("change").on("change", function() {
         const id = $(this).closest(".cthr-rule").data("id");
         updateRule(id, "enabled", $(this).is(":checked"));
@@ -233,6 +246,14 @@ function createSettingsUI() {
 
                     <hr />
 
+                    <h4>Options</h4>
+                    <label class="checkbox_label">
+                        <input id="cthr-skipLastAssistant" type="checkbox" />
+                        <span>Skip last assistant message (fixes swipe issue)</span>
+                    </label>
+
+                    <hr />
+
                     <h4>Regex Rules</h4>
                     <p class="cthr-hint">These rules are applied to all history macros in order.</p>
                     <div id="cthr-regex-rules"></div>
@@ -286,6 +307,7 @@ function createSettingsUI() {
     $("#cthr-assistantHeader").val(config.assistantHeader);
     $("#cthr-xmlUserTag").val(config.xmlUserTag);
     $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
+    $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
 
     $("#cthr-userName").on("input", function() { saveSetting("userName", $(this).val()); });
     $("#cthr-assistantName").on("input", function() { saveSetting("assistantName", $(this).val()); });
@@ -293,6 +315,7 @@ function createSettingsUI() {
     $("#cthr-assistantHeader").on("input", function() { saveSetting("assistantHeader", $(this).val()); });
     $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
+    $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
 
     $("#cthr-add-rule").on("click", addRule);
 
@@ -300,10 +323,10 @@ function createSettingsUI() {
 }
 
 function registerMacros() {
-    // Using "R" suffix to avoid conflicts with the non-regex version
     MacrosParser.registerMacro('headerHistoryR', () => {
         const c = getConfig();
-        const raw = chat.map(msg => {
+        const messages = getChatHistory();
+        const raw = messages.map(msg => {
             const header = msg.is_user ? c.userHeader : c.assistantHeader;
             return `${header}\n${msg.mes}`;
         }).join('\n\n');
@@ -312,7 +335,8 @@ function registerMacros() {
 
     MacrosParser.registerMacro('colonHistoryR', () => {
         const c = getConfig();
-        const raw = chat.map(msg => {
+        const messages = getChatHistory();
+        const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${name}: ${msg.mes}`;
         }).join('\n\n');
@@ -321,7 +345,8 @@ function registerMacros() {
 
     MacrosParser.registerMacro('xmlHistoryR', () => {
         const c = getConfig();
-        const raw = chat.map(msg => {
+        const messages = getChatHistory();
+        const raw = messages.map(msg => {
             const tag = msg.is_user ? c.xmlUserTag : c.xmlAssistantTag;
             return `<${tag}>\n${msg.mes}\n</${tag}>`;
         }).join('\n\n');
@@ -330,7 +355,8 @@ function registerMacros() {
 
     MacrosParser.registerMacro('bracketHistoryR', () => {
         const c = getConfig();
-        const raw = chat.map(msg => {
+        const messages = getChatHistory();
+        const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `[${name}]\n${msg.mes}\n[/${name}]`;
         }).join('\n\n');
@@ -339,7 +365,8 @@ function registerMacros() {
 
     MacrosParser.registerMacro('numberedHistoryR', () => {
         const c = getConfig();
-        const raw = chat.map((msg, i) => {
+        const messages = getChatHistory();
+        const raw = messages.map((msg, i) => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${i + 1}. ${name}: ${msg.mes}`;
         }).join('\n\n');
@@ -348,7 +375,8 @@ function registerMacros() {
 
     MacrosParser.registerMacro('quoteHistoryR', () => {
         const c = getConfig();
-        const raw = chat.map(msg => {
+        const messages = getChatHistory();
+        const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             const quoted = msg.mes.split('\n').map(line => `> ${line}`).join('\n');
             return `**${name}:**\n${quoted}`;
@@ -359,7 +387,8 @@ function registerMacros() {
     MacrosParser.registerMacro('lastNR', (args) => {
         const c = getConfig();
         const n = parseInt(args) || 10;
-        const raw = chat.slice(-n).map(msg => {
+        const messages = getChatHistory();
+        const raw = messages.slice(-n).map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${name}: ${msg.mes}`;
         }).join('\n\n');
@@ -367,7 +396,8 @@ function registerMacros() {
     });
 
     MacrosParser.registerMacro('rawHistoryR', () => {
-        const raw = chat.map(msg => msg.mes).join('\n\n---\n\n');
+        const messages = getChatHistory();
+        const raw = messages.map(msg => msg.mes).join('\n\n---\n\n');
         return applyRegexRules(raw);
     });
 }
