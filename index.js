@@ -1,7 +1,16 @@
-import { chat, getTokenCount } from "../../../../script.js";
+import { chat } from "../../../../script.js";
 import { MacrosParser } from "../../../macros.js";
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
+
+// Try to import ST's tokenizer
+let getTokenCount = null;
+try {
+    const tokenizers = await import("../../../tokenizers.js");
+    getTokenCount = tokenizers.getTokenCountAsync || tokenizers.getTokenCount;
+} catch (e) {
+    console.warn("[CTH-R] Could not import tokenizer, using estimation");
+}
 
 const extensionName = "customizable-text-history-with-regexes";
 
@@ -14,8 +23,8 @@ const defaultSettings = {
     xmlUserTag: "student",
     xmlAssistantTag: "teacher",
     skipLastAssistant: true,
-    suffixInjection: "",
     maxTokens: 0,  // 0 = unlimited
+    charsPerToken: 4,  // fallback estimation ratio
     regexRules: []
 };
 
@@ -42,29 +51,23 @@ function saveAllSettings() {
     saveSettingsDebounced();
 }
 
-// Limit messages by token count (takes from end/most recent)
-function limitByTokens(messages, maxTokens) {
-    const result = [];
-    let totalTokens = 0;
-
-    // Work backwards from most recent
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        const msgTokens = getTokenCount(msg.mes);
-
-        if (totalTokens + msgTokens > maxTokens && result.length > 0) {
-            break;  // Would exceed limit
+// Estimate token count
+async function estimateTokens(text) {
+    if (getTokenCount) {
+        try {
+            const count = await getTokenCount(text);
+            return count;
+        } catch (e) {
+            // Fall through to estimation
         }
-
-        result.unshift(msg);  // Add to front
-        totalTokens += msgTokens;
     }
-
-    return result;
+    // Fallback: estimate based on characters
+    const config = getConfig();
+    return Math.ceil(text.length / config.charsPerToken);
 }
 
-// Get chat history with skip logic and token limiting
-function getChatHistory() {
+// Get chat history with optional skip logic and token limit
+async function getChatHistory() {
     const config = getConfig();
     let messages = [...chat];
 
@@ -76,9 +79,25 @@ function getChatHistory() {
         }
     }
 
-    // Apply token limit (take from end)
+    // Apply token limit (0 = unlimited)
     if (config.maxTokens > 0) {
-        messages = limitByTokens(messages, config.maxTokens);
+        const limitedMessages = [];
+        let totalTokens = 0;
+
+        // Start from most recent, work backwards
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const msg = messages[i];
+            const msgTokens = await estimateTokens(msg.mes);
+
+            if (totalTokens + msgTokens > config.maxTokens) {
+                break;
+            }
+
+            limitedMessages.unshift(msg);
+            totalTokens += msgTokens;
+        }
+
+        return limitedMessages;
     }
 
     return messages;
@@ -86,8 +105,7 @@ function getChatHistory() {
 
 // Apply all regex rules to text
 function applyRegexRules(text) {
-    const config = getConfig();
-    const rules = config.regexRules || [];
+    const rules = getConfig().regexRules || [];
     let result = text;
 
     for (const rule of rules) {
@@ -113,21 +131,11 @@ function applyRegexRules(text) {
         }
     }
 
-    // Append suffix injection if set
-    if (config.suffixInjection) {
-        result = result + '\n\n' + config.suffixInjection;
-    }
-
     return result;
 }
 
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
-}
-
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
 }
 
 function renderRegexRules() {
@@ -208,6 +216,11 @@ function renderRegexRules() {
     });
 }
 
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
+}
+
 function addRule() {
     const rules = getConfig().regexRules;
     rules.push({
@@ -286,16 +299,16 @@ function createSettingsUI() {
                         <span>Skip last assistant message (fixes swipe issue)</span>
                     </label>
 
-                    <h4>Token Limit</h4>
                     <label>
                         Max Tokens (0 = unlimited):
                         <input id="cthr-maxTokens" type="number" class="text_pole" min="0" step="100" />
                     </label>
-                    <p class="cthr-hint">Limits history to approximately this many tokens (takes most recent messages)</p>
 
-                    <h4>Suffix Injection</h4>
-                    <p class="cthr-hint">Text to append at the end of history (for compatibility with other extensions)</p>
-                    <textarea id="cthr-suffix" class="text_pole" placeholder="Instructions appended after history..."></textarea>
+                    <label>
+                        Chars per Token (fallback estimation):
+                        <input id="cthr-charsPerToken" type="number" class="text_pole" min="1" max="10" step="0.5" />
+                    </label>
+                    <p class="cthr-hint">Uses ST's tokenizer if available, otherwise estimates based on chars/token ratio.</p>
 
                     <hr />
 
@@ -354,7 +367,7 @@ function createSettingsUI() {
     $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
     $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
     $("#cthr-maxTokens").val(config.maxTokens);
-    $("#cthr-suffix").val(config.suffixInjection);
+    $("#cthr-charsPerToken").val(config.charsPerToken);
 
     $("#cthr-userName").on("input", function() { saveSetting("userName", $(this).val()); });
     $("#cthr-assistantName").on("input", function() { saveSetting("assistantName", $(this).val()); });
@@ -364,7 +377,7 @@ function createSettingsUI() {
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
     $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
     $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
-    $("#cthr-suffix").on("input", function() { saveSetting("suffixInjection", $(this).val()); });
+    $("#cthr-charsPerToken").on("input", function() { saveSetting("charsPerToken", parseFloat($(this).val()) || 4); });
 
     $("#cthr-add-rule").on("click", addRule);
 
@@ -372,9 +385,9 @@ function createSettingsUI() {
 }
 
 function registerMacros() {
-    MacrosParser.registerMacro('headerHistoryR', () => {
+    MacrosParser.registerMacro('headerHistoryR', async () => {
         const c = getConfig();
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.map(msg => {
             const header = msg.is_user ? c.userHeader : c.assistantHeader;
             return `${header}\n${msg.mes}`;
@@ -382,9 +395,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('colonHistoryR', () => {
+    MacrosParser.registerMacro('colonHistoryR', async () => {
         const c = getConfig();
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${name}: ${msg.mes}`;
@@ -392,9 +405,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('xmlHistoryR', () => {
+    MacrosParser.registerMacro('xmlHistoryR', async () => {
         const c = getConfig();
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.map(msg => {
             const tag = msg.is_user ? c.xmlUserTag : c.xmlAssistantTag;
             return `<${tag}>\n${msg.mes}\n</${tag}>`;
@@ -402,9 +415,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('bracketHistoryR', () => {
+    MacrosParser.registerMacro('bracketHistoryR', async () => {
         const c = getConfig();
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `[${name}]\n${msg.mes}\n[/${name}]`;
@@ -412,9 +425,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('numberedHistoryR', () => {
+    MacrosParser.registerMacro('numberedHistoryR', async () => {
         const c = getConfig();
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.map((msg, i) => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${i + 1}. ${name}: ${msg.mes}`;
@@ -422,9 +435,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('quoteHistoryR', () => {
+    MacrosParser.registerMacro('quoteHistoryR', async () => {
         const c = getConfig();
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             const quoted = msg.mes.split('\n').map(line => `> ${line}`).join('\n');
@@ -433,10 +446,10 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('lastNR', (args) => {
+    MacrosParser.registerMacro('lastNR', async (args) => {
         const c = getConfig();
         const n = parseInt(args) || 10;
-        const messages = getChatHistory();
+        const messages = await getChatHistory();
         const raw = messages.slice(-n).map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${name}: ${msg.mes}`;
@@ -444,8 +457,8 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('rawHistoryR', () => {
-        const messages = getChatHistory();
+    MacrosParser.registerMacro('rawHistoryR', async () => {
+        const messages = await getChatHistory();
         const raw = messages.map(msg => msg.mes).join('\n\n---\n\n');
         return applyRegexRules(raw);
     });
@@ -456,4 +469,9 @@ jQuery(async () => {
     createSettingsUI();
     registerMacros();
     console.log('[Customizable Text History with Regexes] Extension loaded!');
+    if (getTokenCount) {
+        console.log('[CTH-R] Using ST tokenizer');
+    } else {
+        console.log('[CTH-R] Using character-based token estimation');
+    }
 });
