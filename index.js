@@ -1,4 +1,4 @@
-import { chat } from "../../../../script.js";
+import { chat, getTokenCount } from "../../../../script.js";
 import { MacrosParser } from "../../../macros.js";
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
@@ -13,7 +13,9 @@ const defaultSettings = {
     assistantHeader: "## Teacher's Turn",
     xmlUserTag: "student",
     xmlAssistantTag: "teacher",
-    skipLastAssistant: true,  // NEW: skip last assistant message
+    skipLastAssistant: true,
+    suffixInjection: "",
+    maxTokens: 0,  // 0 = unlimited
     regexRules: []
 };
 
@@ -40,7 +42,28 @@ function saveAllSettings() {
     saveSettingsDebounced();
 }
 
-// Get chat history with optional skip logic
+// Limit messages by token count (takes from end/most recent)
+function limitByTokens(messages, maxTokens) {
+    const result = [];
+    let totalTokens = 0;
+
+    // Work backwards from most recent
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const msgTokens = getTokenCount(msg.mes);
+
+        if (totalTokens + msgTokens > maxTokens && result.length > 0) {
+            break;  // Would exceed limit
+        }
+
+        result.unshift(msg);  // Add to front
+        totalTokens += msgTokens;
+    }
+
+    return result;
+}
+
+// Get chat history with skip logic and token limiting
 function getChatHistory() {
     const config = getConfig();
     let messages = [...chat];
@@ -53,12 +76,18 @@ function getChatHistory() {
         }
     }
 
+    // Apply token limit (take from end)
+    if (config.maxTokens > 0) {
+        messages = limitByTokens(messages, config.maxTokens);
+    }
+
     return messages;
 }
 
 // Apply all regex rules to text
 function applyRegexRules(text) {
-    const rules = getConfig().regexRules || [];
+    const config = getConfig();
+    const rules = config.regexRules || [];
     let result = text;
 
     for (const rule of rules) {
@@ -84,11 +113,21 @@ function applyRegexRules(text) {
         }
     }
 
+    // Append suffix injection if set
+    if (config.suffixInjection) {
+        result = result + '\n\n' + config.suffixInjection;
+    }
+
     return result;
 }
 
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
 }
 
 function renderRegexRules() {
@@ -169,11 +208,6 @@ function renderRegexRules() {
     });
 }
 
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
-}
-
 function addRule() {
     const rules = getConfig().regexRules;
     rules.push({
@@ -252,6 +286,17 @@ function createSettingsUI() {
                         <span>Skip last assistant message (fixes swipe issue)</span>
                     </label>
 
+                    <h4>Token Limit</h4>
+                    <label>
+                        Max Tokens (0 = unlimited):
+                        <input id="cthr-maxTokens" type="number" class="text_pole" min="0" step="100" />
+                    </label>
+                    <p class="cthr-hint">Limits history to approximately this many tokens (takes most recent messages)</p>
+
+                    <h4>Suffix Injection</h4>
+                    <p class="cthr-hint">Text to append at the end of history (for compatibility with other extensions)</p>
+                    <textarea id="cthr-suffix" class="text_pole" placeholder="Instructions appended after history..."></textarea>
+
                     <hr />
 
                     <h4>Regex Rules</h4>
@@ -308,6 +353,8 @@ function createSettingsUI() {
     $("#cthr-xmlUserTag").val(config.xmlUserTag);
     $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
     $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
+    $("#cthr-maxTokens").val(config.maxTokens);
+    $("#cthr-suffix").val(config.suffixInjection);
 
     $("#cthr-userName").on("input", function() { saveSetting("userName", $(this).val()); });
     $("#cthr-assistantName").on("input", function() { saveSetting("assistantName", $(this).val()); });
@@ -316,6 +363,8 @@ function createSettingsUI() {
     $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
     $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
+    $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
+    $("#cthr-suffix").on("input", function() { saveSetting("suffixInjection", $(this).val()); });
 
     $("#cthr-add-rule").on("click", addRule);
 
