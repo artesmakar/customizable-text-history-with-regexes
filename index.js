@@ -3,15 +3,6 @@ import { MacrosParser } from "../../../macros.js";
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
 
-// Try to import ST's tokenizer
-let getTokenCount = null;
-try {
-    const tokenizers = await import("../../../tokenizers.js");
-    getTokenCount = tokenizers.getTokenCountAsync || tokenizers.getTokenCount;
-} catch (e) {
-    console.warn("[CTH-R] Could not import tokenizer, using estimation");
-}
-
 const extensionName = "customizable-text-history-with-regexes";
 
 // Default settings
@@ -23,8 +14,8 @@ const defaultSettings = {
     xmlUserTag: "student",
     xmlAssistantTag: "teacher",
     skipLastAssistant: true,
-    maxTokens: 0,  // 0 = unlimited
-    charsPerToken: 4,  // fallback estimation ratio
+    maxTokens: 0,
+    charsPerToken: 4,
     regexRules: []
 };
 
@@ -51,23 +42,14 @@ function saveAllSettings() {
     saveSettingsDebounced();
 }
 
-// Estimate token count
-async function estimateTokens(text) {
-    if (getTokenCount) {
-        try {
-            const count = await getTokenCount(text);
-            return count;
-        } catch (e) {
-            // Fall through to estimation
-        }
-    }
-    // Fallback: estimate based on characters
+// Estimate token count (synchronous)
+function estimateTokens(text) {
     const config = getConfig();
     return Math.ceil(text.length / config.charsPerToken);
 }
 
 // Get chat history with optional skip logic and token limit
-async function getChatHistory() {
+function getChatHistory() {
     const config = getConfig();
     let messages = [...chat];
 
@@ -87,7 +69,7 @@ async function getChatHistory() {
         // Start from most recent, work backwards
         for (let i = messages.length - 1; i >= 0; i--) {
             const msg = messages[i];
-            const msgTokens = await estimateTokens(msg.mes);
+            const msgTokens = estimateTokens(msg.mes);
 
             if (totalTokens + msgTokens > config.maxTokens) {
                 break;
@@ -305,10 +287,10 @@ function createSettingsUI() {
                     </label>
 
                     <label>
-                        Chars per Token (fallback estimation):
+                        Chars per Token (for estimation):
                         <input id="cthr-charsPerToken" type="number" class="text_pole" min="1" max="10" step="0.5" />
                     </label>
-                    <p class="cthr-hint">Uses ST's tokenizer if available, otherwise estimates based on chars/token ratio.</p>
+                    <p class="cthr-hint">Token count is estimated as: characters ÷ chars-per-token. Default 4 works well for English.</p>
 
                     <hr />
 
@@ -385,9 +367,9 @@ function createSettingsUI() {
 }
 
 function registerMacros() {
-    MacrosParser.registerMacro('headerHistoryR', async () => {
+    MacrosParser.registerMacro('headerHistoryR', () => {
         const c = getConfig();
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.map(msg => {
             const header = msg.is_user ? c.userHeader : c.assistantHeader;
             return `${header}\n${msg.mes}`;
@@ -395,9 +377,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('colonHistoryR', async () => {
+    MacrosParser.registerMacro('colonHistoryR', () => {
         const c = getConfig();
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${name}: ${msg.mes}`;
@@ -405,9 +387,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('xmlHistoryR', async () => {
+    MacrosParser.registerMacro('xmlHistoryR', () => {
         const c = getConfig();
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.map(msg => {
             const tag = msg.is_user ? c.xmlUserTag : c.xmlAssistantTag;
             return `<${tag}>\n${msg.mes}\n</${tag}>`;
@@ -415,9 +397,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('bracketHistoryR', async () => {
+    MacrosParser.registerMacro('bracketHistoryR', () => {
         const c = getConfig();
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `[${name}]\n${msg.mes}\n[/${name}]`;
@@ -425,9 +407,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('numberedHistoryR', async () => {
+    MacrosParser.registerMacro('numberedHistoryR', () => {
         const c = getConfig();
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.map((msg, i) => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${i + 1}. ${name}: ${msg.mes}`;
@@ -435,9 +417,9 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('quoteHistoryR', async () => {
+    MacrosParser.registerMacro('quoteHistoryR', () => {
         const c = getConfig();
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             const quoted = msg.mes.split('\n').map(line => `> ${line}`).join('\n');
@@ -446,10 +428,10 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('lastNR', async (args) => {
+    MacrosParser.registerMacro('lastNR', (args) => {
         const c = getConfig();
         const n = parseInt(args) || 10;
-        const messages = await getChatHistory();
+        const messages = getChatHistory();
         const raw = messages.slice(-n).map(msg => {
             const name = msg.is_user ? c.userName : c.assistantName;
             return `${name}: ${msg.mes}`;
@@ -457,8 +439,8 @@ function registerMacros() {
         return applyRegexRules(raw);
     });
 
-    MacrosParser.registerMacro('rawHistoryR', async () => {
-        const messages = await getChatHistory();
+    MacrosParser.registerMacro('rawHistoryR', () => {
+        const messages = getChatHistory();
         const raw = messages.map(msg => msg.mes).join('\n\n---\n\n');
         return applyRegexRules(raw);
     });
@@ -469,9 +451,4 @@ jQuery(async () => {
     createSettingsUI();
     registerMacros();
     console.log('[Customizable Text History with Regexes] Extension loaded!');
-    if (getTokenCount) {
-        console.log('[CTH-R] Using ST tokenizer');
-    } else {
-        console.log('[CTH-R] Using character-based token estimation');
-    }
 });
