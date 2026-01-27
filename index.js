@@ -16,6 +16,7 @@ const defaultSettings = {
     skipLastAssistant: true,
     maxTokens: 0,
     charsPerToken: 4,
+    softTokenLimit: false,
     regexRules: []
 };
 
@@ -71,12 +72,23 @@ function getChatHistory() {
             const msg = messages[i];
             const msgTokens = estimateTokens(msg.mes);
 
-            if (totalTokens + msgTokens > config.maxTokens) {
-                break;
-            }
+            if (config.softTokenLimit) {
+                // Soft limit: include message that crosses threshold, then stop
+                limitedMessages.unshift(msg);
+                totalTokens += msgTokens;
 
-            limitedMessages.unshift(msg);
-            totalTokens += msgTokens;
+                if (totalTokens >= config.maxTokens) {
+                    break;
+                }
+            } else {
+                // Hard limit: stop before exceeding threshold
+                if (totalTokens + msgTokens > config.maxTokens) {
+                    break;
+                }
+
+                limitedMessages.unshift(msg);
+                totalTokens += msgTokens;
+            }
         }
 
         return limitedMessages;
@@ -281,6 +293,11 @@ function createSettingsUI() {
                         <span>Skip last assistant message (fixes swipe issue)</span>
                     </label>
 
+                    <label class="checkbox_label">
+                        <input id="cthr-softTokenLimit" type="checkbox" />
+                        <span>Soft token limit (include message that exceeds limit)</span>
+                    </label>
+
                     <label>
                         Max Tokens (0 = unlimited):
                         <input id="cthr-maxTokens" type="number" class="text_pole" min="0" step="100" />
@@ -348,6 +365,7 @@ function createSettingsUI() {
     $("#cthr-xmlUserTag").val(config.xmlUserTag);
     $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
     $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
+    $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
     $("#cthr-maxTokens").val(config.maxTokens);
     $("#cthr-charsPerToken").val(config.charsPerToken);
 
@@ -358,6 +376,7 @@ function createSettingsUI() {
     $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
     $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
+    $("#cthr-softTokenLimit").on("change", function() { saveSetting("softTokenLimit", $(this).is(":checked")); });
     $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
     $("#cthr-charsPerToken").on("input", function() { saveSetting("charsPerToken", parseFloat($(this).val()) || 4); });
 
