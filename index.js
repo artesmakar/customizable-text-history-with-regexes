@@ -1,11 +1,11 @@
-import { chat } from "../../../../script.js";
-import { MacrosParser } from "../../../macros.js";
+// Custom Thread Builder Plugin for SillyTavern
+// Builds custom prompt threads with configurable formatting
+
+import { chat, chat_metadata, saveMetadataDebounced } from "../../../../script.js";
 import { extension_settings } from "../../../extensions.js";
-import { saveSettingsDebounced } from "../../../../script.js";
 
-const extensionName = "customizable-text-history-with-regexes";
+const extensionName = "custom-thread-builder";
 
-// Default settings
 const defaultSettings = {
     userName: "Student",
     assistantName: "Teacher",
@@ -17,37 +17,86 @@ const defaultSettings = {
     maxTokens: 0,
     charsPerToken: 4,
     softTokenLimit: false,
+    excludeLastUserMessage: false,
     regexRules: []
 };
 
-function loadSettings() {
-    extension_settings[extensionName] = extension_settings[extensionName] || {};
-
-    for (const [key, value] of Object.entries(defaultSettings)) {
-        if (extension_settings[extensionName][key] === undefined) {
-            extension_settings[extensionName][key] = Array.isArray(value) ? [...value] : value;
-        }
-    }
-}
+// ============================================
+// SETTINGS MANAGEMENT
+// ============================================
 
 function getConfig() {
-    return extension_settings[extensionName];
+    if (!extension_settings[extensionName]) {
+        extension_settings[extensionName] = {};
+    }
+
+    // Return merged defaults + saved settings
+    return Object.assign({}, defaultSettings, extension_settings[extensionName]);
 }
 
 function saveSetting(key, value) {
+    if (!extension_settings[extensionName]) {
+        extension_settings[extensionName] = {};
+    }
     extension_settings[extensionName][key] = value;
-    saveSettingsDebounced();
+    saveMetadataDebounced();
 }
 
-function saveAllSettings() {
-    saveSettingsDebounced();
+// ============================================
+// REGEX ENGINE
+// ============================================
+
+function applyRegexRules(text, isUser) {
+    const config = getConfig();
+    const rules = config.regexRules || [];
+
+    for (const rule of rules) {
+        if (!rule.enabled) continue;
+
+        // Check if rule applies to this message type
+        if (rule.appliesTo === "user" && !isUser) continue;
+        if (rule.appliesTo === "assistant" && isUser) continue;
+        // "both" applies to everything
+
+        try {
+            const flags = rule.flags || "g";
+            const regex = new RegExp(rule.pattern, flags);
+            text = text.replace(regex, rule.replacement);
+        } catch (e) {
+            console.warn(`[${extensionName}] Invalid regex pattern: ${rule.pattern}`, e);
+        }
+    }
+
+    return text;
 }
 
-// Estimate token count (synchronous)
+// ============================================
+// TOKEN ESTIMATION
+// ============================================
+
 function estimateTokens(text) {
     const config = getConfig();
-    return Math.ceil(text.length / config.charsPerToken);
+    const charsPerToken = config.charsPerToken || 4;
+    return Math.ceil(text.length / charsPerToken);
 }
+
+// ============================================
+// LAST USER MESSAGE
+// ============================================
+
+function getLastUserMessage() {
+    // Walk backwards through chat to find the last user message
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i].is_user) {
+            return applyRegexRules(chat[i].mes, true);
+        }
+    }
+    return "";
+}
+
+// ============================================
+// CHAT HISTORY MANAGEMENT
+// ============================================
 
 // Get chat history with optional skip logic and token limit
 function getChatHistory() {
@@ -59,6 +108,17 @@ function getChatHistory() {
         const lastMsg = messages[messages.length - 1];
         if (!lastMsg.is_user) {
             messages = messages.slice(0, -1);
+        }
+    }
+
+    // Exclude last user message from thread if enabled
+    if (config.excludeLastUserMessage && messages.length > 0) {
+        // Find and remove the last user message
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].is_user) {
+                messages.splice(i, 1);
+                break;
+            }
         }
     }
 
@@ -97,377 +157,275 @@ function getChatHistory() {
     return messages;
 }
 
-// Apply all regex rules to text
-function applyRegexRules(text) {
-    const rules = getConfig().regexRules || [];
-    let result = text;
+// ============================================
+// THREAD BUILDER
+// ============================================
 
-    for (const rule of rules) {
-        if (!rule.enabled || !rule.findRegex) continue;
-
-        try {
-            const regex = new RegExp(rule.findRegex, 'g');
-            result = result.replace(regex, rule.replaceWith || '');
-
-            if (rule.trimOut) {
-                const trimPatterns = rule.trimOut.split('\n').filter(p => p.trim());
-                for (const pattern of trimPatterns) {
-                    try {
-                        const trimRegex = new RegExp(pattern, 'g');
-                        result = result.replace(trimRegex, '');
-                    } catch (e) {
-                        console.warn(`[CTH-R] Invalid trim pattern: ${pattern}`, e);
-                    }
-                }
-            }
-        } catch (e) {
-            console.warn(`[CTH-R] Invalid regex in rule "${rule.name}":`, e);
-        }
-    }
-
-    return result;
-}
-
-function generateId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2);
-}
-
-function renderRegexRules() {
-    const container = $("#cthr-regex-rules");
-    container.empty();
-
-    const rules = getConfig().regexRules || [];
-
-    if (rules.length === 0) {
-        container.append('<div class="cthr-no-rules">No regex rules yet. Click "Add Rule" to create one.</div>');
-        return;
-    }
-
-    for (const rule of rules) {
-        const ruleHtml = `
-        <div class="cthr-rule" data-id="${rule.id}">
-            <div class="cthr-rule-header">
-                <input type="checkbox" class="cthr-rule-enabled" ${rule.enabled ? 'checked' : ''} title="Enable/Disable" />
-                <input type="text" class="cthr-rule-name text_pole" value="${escapeHtml(rule.name)}" placeholder="Rule name" />
-                <button class="cthr-rule-delete menu_button" title="Delete rule">
-                    <i class="fa-solid fa-trash"></i>
-                </button>
-                <button class="cthr-rule-toggle menu_button" title="Expand/Collapse">
-                    <i class="fa-solid fa-chevron-down"></i>
-                </button>
-            </div>
-            <div class="cthr-rule-body">
-                <label>
-                    Find Regex:
-                    <input type="text" class="cthr-rule-find text_pole" value="${escapeHtml(rule.findRegex)}" placeholder="Regular expression" />
-                </label>
-                <label>
-                    Replace With:
-                    <textarea class="cthr-rule-replace text_pole" placeholder="Use $1, $2 for capture groups...">${escapeHtml(rule.replaceWith)}</textarea>
-                </label>
-                <label>
-                    Trim Out (one pattern per line):
-                    <textarea class="cthr-rule-trim text_pole" placeholder="Additional patterns to remove...">${escapeHtml(rule.trimOut)}</textarea>
-                </label>
-            </div>
-        </div>`;
-        container.append(ruleHtml);
-    }
-
-    $(".cthr-rule-enabled").off("change").on("change", function() {
-        const id = $(this).closest(".cthr-rule").data("id");
-        updateRule(id, "enabled", $(this).is(":checked"));
-    });
-
-    $(".cthr-rule-name").off("input").on("input", function() {
-        const id = $(this).closest(".cthr-rule").data("id");
-        updateRule(id, "name", $(this).val());
-    });
-
-    $(".cthr-rule-find").off("input").on("input", function() {
-        const id = $(this).closest(".cthr-rule").data("id");
-        updateRule(id, "findRegex", $(this).val());
-    });
-
-    $(".cthr-rule-replace").off("input").on("input", function() {
-        const id = $(this).closest(".cthr-rule").data("id");
-        updateRule(id, "replaceWith", $(this).val());
-    });
-
-    $(".cthr-rule-trim").off("input").on("input", function() {
-        const id = $(this).closest(".cthr-rule").data("id");
-        updateRule(id, "trimOut", $(this).val());
-    });
-
-    $(".cthr-rule-delete").off("click").on("click", function() {
-        const id = $(this).closest(".cthr-rule").data("id");
-        deleteRule(id);
-    });
-
-    $(".cthr-rule-toggle").off("click").on("click", function() {
-        $(this).closest(".cthr-rule").toggleClass("collapsed");
-        $(this).find("i").toggleClass("fa-chevron-down fa-chevron-right");
-    });
-}
-
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
-}
-
-function addRule() {
-    const rules = getConfig().regexRules;
-    rules.push({
-        id: generateId(),
-        name: `Rule ${rules.length + 1}`,
-        enabled: true,
-        findRegex: '',
-        replaceWith: '',
-        trimOut: ''
-    });
-    saveAllSettings();
-    renderRegexRules();
-}
-
-function updateRule(id, field, value) {
-    const rules = getConfig().regexRules;
-    const rule = rules.find(r => r.id === id);
-    if (rule) {
-        rule[field] = value;
-        saveAllSettings();
-    }
-}
-
-function deleteRule(id) {
+function buildThread() {
     const config = getConfig();
-    config.regexRules = config.regexRules.filter(r => r.id !== id);
-    saveAllSettings();
-    renderRegexRules();
+    const messages = getChatHistory();
+    let thread = "";
+
+    for (const msg of messages) {
+        const isUser = msg.is_user;
+        const header = isUser ? config.userHeader : config.assistantHeader;
+        const tag = isUser ? config.xmlUserTag : config.xmlAssistantTag;
+
+        // Apply regex rules to message content
+        let content = applyRegexRules(msg.mes, isUser);
+
+        // Build the message block
+        thread += `${header}\n<${tag}_message>${content}</${tag}_message>\n\n`;
+    }
+
+    return thread.trim();
 }
+
+// ============================================
+// MACRO REGISTRATION
+// ============================================
+
+function registerMacro() {
+    const macroProvider = SillyTavern.getContext().macros;
+    if (macroProvider) {
+        macroProvider.register(extensionName, "thread", () => buildThread());
+        macroProvider.register(extensionName, "lastMessage", () => getLastUserMessage());
+        console.log(`[${extensionName}] Macros {{thread}} and {{lastMessage}} registered.`);
+    } else {
+        console.warn(`[${extensionName}] Macro provider not available.`);
+    }
+}
+
+// ============================================
+// SETTINGS UI
+// ============================================
 
 function createSettingsUI() {
-    const html = `
-    <div id="cthr-settings">
+    const config = getConfig();
+
+    const settingsHtml = `
+    <div id="cthr-settings" class="extension_settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Customizable Text History (Regex)</b>
+                <b>Custom Thread Builder</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <div class="cthr-settings-block">
-                    <h4>Names (for colon/numbered styles)</h4>
-                    <label>
-                        User Name:
-                        <input id="cthr-userName" type="text" class="text_pole" />
-                    </label>
-                    <label>
-                        Assistant Name:
-                        <input id="cthr-assistantName" type="text" class="text_pole" />
-                    </label>
 
-                    <h4>Headers (for header style)</h4>
-                    <label>
-                        User Header:
-                        <input id="cthr-userHeader" type="text" class="text_pole" />
-                    </label>
-                    <label>
-                        Assistant Header:
-                        <input id="cthr-assistantHeader" type="text" class="text_pole" />
-                    </label>
+                <h4>Names</h4>
+                <label for="cthr-userName">User Name</label>
+                <input id="cthr-userName" class="text_pole" type="text" value="${config.userName}" />
 
-                    <h4>XML Tags (for xml style)</h4>
-                    <label>
-                        User Tag:
-                        <input id="cthr-xmlUserTag" type="text" class="text_pole" />
-                    </label>
-                    <label>
-                        Assistant Tag:
-                        <input id="cthr-xmlAssistantTag" type="text" class="text_pole" />
-                    </label>
+                <label for="cthr-assistantName">Assistant Name</label>
+                <input id="cthr-assistantName" class="text_pole" type="text" value="${config.assistantName}" />
 
-                    <hr />
+                <hr />
+                <h4>Headers</h4>
+                <label for="cthr-userHeader">User Header</label>
+                <input id="cthr-userHeader" class="text_pole" type="text" value="${config.userHeader}" />
 
-                    <h4>Options</h4>
-                    <label class="checkbox_label">
-                        <input id="cthr-skipLastAssistant" type="checkbox" />
-                        <span>Skip last assistant message (fixes swipe issue)</span>
-                    </label>
+                <label for="cthr-assistantHeader">Assistant Header</label>
+                <input id="cthr-assistantHeader" class="text_pole" type="text" value="${config.assistantHeader}" />
 
-                    <label class="checkbox_label">
-                        <input id="cthr-softTokenLimit" type="checkbox" />
-                        <span>Soft token limit (include message that exceeds limit)</span>
-                    </label>
+                <hr />
+                <h4>XML Tags</h4>
+                <label for="cthr-xmlUserTag">User XML Tag Name</label>
+                <input id="cthr-xmlUserTag" class="text_pole" type="text" value="${config.xmlUserTag}" />
 
-                    <label>
-                        Max Tokens (0 = unlimited):
-                        <input id="cthr-maxTokens" type="number" class="text_pole" min="0" step="100" />
-                    </label>
+                <label for="cthr-xmlAssistantTag">Assistant XML Tag Name</label>
+                <input id="cthr-xmlAssistantTag" class="text_pole" type="text" value="${config.xmlAssistantTag}" />
 
-                    <label>
-                        Chars per Token (for estimation):
-                        <input id="cthr-charsPerToken" type="number" class="text_pole" min="1" max="10" step="0.5" />
-                    </label>
-                    <p class="cthr-hint">Token count is estimated as: characters ÷ chars-per-token. Default 4 works well for English.</p>
+                <hr />
+                <h4>Options</h4>
+                <label class="checkbox_label">
+                    <input id="cthr-skipLastAssistant" type="checkbox" />
+                    <span>Skip last assistant message (fixes swipe issue)</span>
+                </label>
 
-                    <hr />
+                <label class="checkbox_label">
+                    <input id="cthr-softTokenLimit" type="checkbox" />
+                    <span>Soft token limit (include message that exceeds limit)</span>
+                </label>
 
-                    <h4>Regex Rules</h4>
-                    <p class="cthr-hint">These rules are applied to all history macros in order.</p>
-                    <div id="cthr-regex-rules"></div>
-                    <button id="cthr-add-rule" class="menu_button">
-                        <i class="fa-solid fa-plus"></i> Add Rule
-                    </button>
+                <label class="checkbox_label">
+                    <input id="cthr-excludeLastUserMessage" type="checkbox" />
+                    <span>Exclude last user message from thread (use {{lastMessage}} separately)</span>
+                </label>
 
-                    <hr />
-                    <div class="cthr-macros">
-                        <b>Available Macros:</b>
-                        <code>{{headerHistoryR}}</code>
-                        <code>{{colonHistoryR}}</code>
-                        <code>{{xmlHistoryR}}</code>
-                        <code>{{bracketHistoryR}}</code>
-                        <code>{{numberedHistoryR}}</code>
-                        <code>{{quoteHistoryR}}</code>
-                        <code>{{lastNR::5}}</code>
-                        <code>{{rawHistoryR}}</code>
-                    </div>
+                <label for="cthr-maxTokens">Max Tokens (0 = unlimited)</label>
+                <input id="cthr-maxTokens" class="text_pole" type="number" min="0" value="${config.maxTokens}" />
+
+                <label for="cthr-charsPerToken">Characters per Token (for estimation)</label>
+                <input id="cthr-charsPerToken" class="text_pole" type="number" min="1" value="${config.charsPerToken}" />
+
+                <hr />
+                <h4>Regex Rules</h4>
+                <div id="cthr-regexList"></div>
+                <div class="menu_button" id="cthr-addRegex">+ Add Regex Rule</div>
+
+                <hr />
+                <h4>Available Macros</h4>
+                <p style="color:#aaa; font-size:0.9em;">
+                    <code>{{thread}}</code> — Full formatted chat history<br/>
+                    <code>{{lastMessage}}</code> — Last user message (with regex applied)
+                </p>
+
+                <hr />
+                <h4>Preview</h4>
+                <div style="display:flex; gap:8px;">
+                    <div class="menu_button" id="cthr-preview">Preview Thread</div>
+                    <div class="menu_button" id="cthr-previewLastMsg">Preview Last Message</div>
                 </div>
+                <pre id="cthr-previewOutput" style="display:none; max-height:300px; overflow-y:auto; background:#1a1a1a; padding:8px; border-radius:4px; font-size:0.85em; white-space:pre-wrap;"></pre>
+
             </div>
         </div>
     </div>`;
 
-    const containers = [
-        "#extensions_settings2",
-        "#extensions_settings",
-        "#extensions_settings_content"
-    ];
+    $("#extensions_settings2").append(settingsHtml);
 
-    let appended = false;
-    for (const selector of containers) {
-        const container = $(selector);
-        if (container.length > 0) {
-            container.append(html);
-            console.log(`[CTH-R] Settings appended to ${selector}`);
-            appended = true;
-            break;
-        }
-    }
-
-    if (!appended) {
-        console.error("[CTH-R] Could not find settings container!");
-        return;
-    }
-
-    const config = getConfig();
-    $("#cthr-userName").val(config.userName);
-    $("#cthr-assistantName").val(config.assistantName);
-    $("#cthr-userHeader").val(config.userHeader);
-    $("#cthr-assistantHeader").val(config.assistantHeader);
-    $("#cthr-xmlUserTag").val(config.xmlUserTag);
-    $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
+    // Load checkbox states
     $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
     $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
-    $("#cthr-maxTokens").val(config.maxTokens);
-    $("#cthr-charsPerToken").val(config.charsPerToken);
+    $("#cthr-excludeLastUserMessage").prop("checked", config.excludeLastUserMessage);
 
+    // --- Event Handlers ---
+
+    // Text inputs
     $("#cthr-userName").on("input", function() { saveSetting("userName", $(this).val()); });
     $("#cthr-assistantName").on("input", function() { saveSetting("assistantName", $(this).val()); });
     $("#cthr-userHeader").on("input", function() { saveSetting("userHeader", $(this).val()); });
     $("#cthr-assistantHeader").on("input", function() { saveSetting("assistantHeader", $(this).val()); });
     $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
+
+    // Number inputs
+    $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
+    $("#cthr-charsPerToken").on("input", function() { saveSetting("charsPerToken", parseInt($(this).val()) || 4); });
+
+    // Checkboxes
     $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
     $("#cthr-softTokenLimit").on("change", function() { saveSetting("softTokenLimit", $(this).is(":checked")); });
-    $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
-    $("#cthr-charsPerToken").on("input", function() { saveSetting("charsPerToken", parseFloat($(this).val()) || 4); });
+    $("#cthr-excludeLastUserMessage").on("change", function() { saveSetting("excludeLastUserMessage", $(this).is(":checked")); });
 
-    $("#cthr-add-rule").on("click", addRule);
+    // Regex
+    $("#cthr-addRegex").on("click", addRegexRule);
+    renderRegexRules();
 
+    // Preview
+    $("#cthr-preview").on("click", function() {
+        const output = $("#cthr-previewOutput");
+        output.text(buildThread());
+        output.show();
+    });
+
+    $("#cthr-previewLastMsg").on("click", function() {
+        const output = $("#cthr-previewOutput");
+        const lastMsg = getLastUserMessage();
+        output.text(lastMsg || "(No user message found)");
+        output.show();
+    });
+}
+
+// ============================================
+// REGEX UI
+// ============================================
+
+function renderRegexRules() {
+    const config = getConfig();
+    const container = $("#cthr-regexList");
+    container.empty();
+
+    if (!config.regexRules || config.regexRules.length === 0) {
+        container.append('<p style="color:#888; font-style:italic;">No regex rules defined.</p>');
+        return;
+    }
+
+    config.regexRules.forEach((rule, index) => {
+        const ruleHtml = `
+        <div class="cthr-regex-rule" style="border:1px solid #444; padding:8px; margin-bottom:8px; border-radius:4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                <label class="checkbox_label" style="margin:0;">
+                    <input type="checkbox" class="cthr-regex-enabled" data-index="${index}" ${rule.enabled ? "checked" : ""} />
+                    <span>Enabled</span>
+                </label>
+                <div class="menu_button cthr-regex-delete" data-index="${index}" style="color:#f66;">✕ Delete</div>
+            </div>
+            <input class="text_pole cthr-regex-pattern" data-index="${index}" type="text" placeholder="Pattern (regex)" value="${(rule.pattern || "").replace(/"/g, """)}" />
+            <input class="text_pole cthr-regex-replacement" data-index="${index}" type="text" placeholder="Replacement" value="${(rule.replacement || "").replace(/"/g, """)}" />
+            <div style="display:flex; gap:8px; margin-top:4px;">
+                <input class="text_pole cthr-regex-flags" data-index="${index}" type="text" placeholder="Flags" value="${rule.flags || "g"}" style="width:60px;" />
+                <select class="cthr-regex-applies" data-index="${index}">
+                    <option value="both" ${rule.appliesTo === "both" ? "selected" : ""}>Both</option>
+                    <option value="user" ${rule.appliesTo === "user" ? "selected" : ""}>User only</option>
+                    <option value="assistant" ${rule.appliesTo === "assistant" ? "selected" : ""}>Assistant only</option>
+                </select>
+            </div>
+        </div>`;
+        container.append(ruleHtml);
+    });
+
+    // Bind regex rule events
+    $(".cthr-regex-enabled").on("change", function() {
+        const i = $(this).data("index");
+        config.regexRules[i].enabled = $(this).is(":checked");
+        saveSetting("regexRules", config.regexRules);
+    });
+
+    $(".cthr-regex-pattern").on("input", function() {
+        const i = $(this).data("index");
+        config.regexRules[i].pattern = $(this).val();
+        saveSetting("regexRules", config.regexRules);
+    });
+
+    $(".cthr-regex-replacement").on("input", function() {
+        const i = $(this).data("index");
+        config.regexRules[i].replacement = $(this).val();
+        saveSetting("regexRules", config.regexRules);
+    });
+
+    $(".cthr-regex-flags").on("input", function() {
+        const i = $(this).data("index");
+        config.regexRules[i].flags = $(this).val();
+        saveSetting("regexRules", config.regexRules);
+    });
+
+    $(".cthr-regex-applies").on("change", function() {
+        const i = $(this).data("index");
+        config.regexRules[i].appliesTo = $(this).val();
+        saveSetting("regexRules", config.regexRules);
+    });
+
+    $(".cthr-regex-delete").on("click", function() {
+        const i = $(this).data("index");
+        config.regexRules.splice(i, 1);
+        saveSetting("regexRules", config.regexRules);
+        renderRegexRules();
+    });
+}
+
+function addRegexRule() {
+    const config = getConfig();
+    if (!config.regexRules) config.regexRules = [];
+
+    config.regexRules.push({
+        pattern: "",
+        replacement: "",
+        flags: "g",
+        appliesTo: "both",
+        enabled: true
+    });
+
+    saveSetting("regexRules", config.regexRules);
     renderRegexRules();
 }
 
-function registerMacros() {
-    MacrosParser.registerMacro('headerHistoryR', () => {
-        const c = getConfig();
-        const messages = getChatHistory();
-        const raw = messages.map(msg => {
-            const header = msg.is_user ? c.userHeader : c.assistantHeader;
-            return `${header}\n${msg.mes}`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('colonHistoryR', () => {
-        const c = getConfig();
-        const messages = getChatHistory();
-        const raw = messages.map(msg => {
-            const name = msg.is_user ? c.userName : c.assistantName;
-            return `${name}: ${msg.mes}`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('xmlHistoryR', () => {
-        const c = getConfig();
-        const messages = getChatHistory();
-        const raw = messages.map(msg => {
-            const tag = msg.is_user ? c.xmlUserTag : c.xmlAssistantTag;
-            return `<${tag}>\n${msg.mes}\n</${tag}>`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('bracketHistoryR', () => {
-        const c = getConfig();
-        const messages = getChatHistory();
-        const raw = messages.map(msg => {
-            const name = msg.is_user ? c.userName : c.assistantName;
-            return `[${name}]\n${msg.mes}\n[/${name}]`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('numberedHistoryR', () => {
-        const c = getConfig();
-        const messages = getChatHistory();
-        const raw = messages.map((msg, i) => {
-            const name = msg.is_user ? c.userName : c.assistantName;
-            return `${i + 1}. ${name}: ${msg.mes}`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('quoteHistoryR', () => {
-        const c = getConfig();
-        const messages = getChatHistory();
-        const raw = messages.map(msg => {
-            const name = msg.is_user ? c.userName : c.assistantName;
-            const quoted = msg.mes.split('\n').map(line => `> ${line}`).join('\n');
-            return `**${name}:**\n${quoted}`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('lastNR', (args) => {
-        const c = getConfig();
-        const n = parseInt(args) || 10;
-        const messages = getChatHistory();
-        const raw = messages.slice(-n).map(msg => {
-            const name = msg.is_user ? c.userName : c.assistantName;
-            return `${name}: ${msg.mes}`;
-        }).join('\n\n');
-        return applyRegexRules(raw);
-    });
-
-    MacrosParser.registerMacro('rawHistoryR', () => {
-        const messages = getChatHistory();
-        const raw = messages.map(msg => msg.mes).join('\n\n---\n\n');
-        return applyRegexRules(raw);
-    });
-}
+// ============================================
+// INITIALIZATION
+// ============================================
 
 jQuery(async () => {
-    loadSettings();
     createSettingsUI();
-    registerMacros();
-    console.log('[Customizable Text History with Regexes] Extension loaded!');
+    registerMacro();
+    console.log(`[${extensionName}] Plugin loaded.`);
 });
