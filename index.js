@@ -188,8 +188,8 @@ function createSettingsUI() {
 
                 <h4>Macros</h4>
                 <div class="cthr-macro-info" style="font-size: 0.9em; margin-bottom: 10px; padding: 8px; background: var(--SmartThemeBlurTintColor); border-radius: 5px;">
-                    <div><code>{{history}}</code> — formatted chat history</div>
-                    <div><code>{{lastMessage}}</code> — last user message (raw text)</div>
+                    <div><code>{{historyEXT}}</code> — formatted chat history</div>
+                    <div><code>{{lastmessageEXT}}</code> — last user message (raw text)</div>
                 </div>
 
                 <h4>Regex Rules</h4>
@@ -308,8 +308,9 @@ jQuery(async () => {
     createSettingsUI();
 
     // Register macros
-    MacrosParser.registerMacro("history", () => getChatHistory());
-    MacrosParser.registerMacro("lastMessage", () => getLastUserMessage());
+MacrosParser.registerMacro("historyEXT", () => getChatHistory());
+MacrosParser.registerMacro("lastmessageEXT", () => getLastUserMessage());
 
     console.log(`[${extensionName}] Loaded successfully.`);
 });
+
