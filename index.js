@@ -17,7 +17,7 @@ const defaultSettings = {
     maxTokens: 0,
     charsPerToken: 4,
     softTokenLimit: false,
-    excludeLastUserMessage: false,
+    excludeLastUserFromThread: false,
     regexRules: []
 };
 
@@ -88,10 +88,19 @@ function getLastUserMessage() {
     // Walk backwards through chat to find the last user message
     for (let i = chat.length - 1; i >= 0; i--) {
         if (chat[i].is_user) {
-            return applyRegexRules(chat[i].mes, true);
+            return chat[i].mes;
         }
     }
     return "";
+}
+
+function getLastUserMessageFormatted() {
+    const config = getConfig();
+    const raw = getLastUserMessage();
+    if (!raw) return "";
+
+    const content = applyRegexRules(raw, true);
+    return `${config.userHeader}\n<${config.xmlUserTag}_message>${content}</${config.xmlUserTag}_message>`;
 }
 
 // ============================================
@@ -112,7 +121,7 @@ function getChatHistory() {
     }
 
     // Exclude last user message from thread if enabled
-    if (config.excludeLastUserMessage && messages.length > 0) {
+    if (config.excludeLastUserFromThread && messages.length > 0) {
         // Find and remove the last user message
         for (let i = messages.length - 1; i >= 0; i--) {
             if (messages[i].is_user) {
@@ -189,8 +198,9 @@ function registerMacro() {
     const macroProvider = SillyTavern.getContext().macros;
     if (macroProvider) {
         macroProvider.register(extensionName, "thread", () => buildThread());
-        macroProvider.register(extensionName, "lastMessage", () => getLastUserMessage());
-        console.log(`[${extensionName}] Macros {{thread}} and {{lastMessage}} registered.`);
+        macroProvider.register(extensionName, "lastusermessage", () => getLastUserMessage());
+        macroProvider.register(extensionName, "lastusermessageformatted", () => getLastUserMessageFormatted());
+        console.log(`[${extensionName}] Macros registered: {{thread}}, {{lastusermessage}}, {{lastusermessageformatted}}`);
     } else {
         console.warn(`[${extensionName}] Macro provider not available.`);
     }
@@ -248,8 +258,8 @@ function createSettingsUI() {
                 </label>
 
                 <label class="checkbox_label">
-                    <input id="cthr-excludeLastUserMessage" type="checkbox" />
-                    <span>Exclude last user message from thread (use {{lastMessage}} separately)</span>
+                    <input id="cthr-excludeLastUser" type="checkbox" />
+                    <span>Exclude last user message from {{thread}} (use {{lastusermessage}} separately)</span>
                 </label>
 
                 <label for="cthr-maxTokens">Max Tokens (0 = unlimited)</label>
@@ -259,24 +269,25 @@ function createSettingsUI() {
                 <input id="cthr-charsPerToken" class="text_pole" type="number" min="1" value="${config.charsPerToken}" />
 
                 <hr />
+                <h4>Available Macros</h4>
+                <div style="background:#1a1a1a; padding:8px; border-radius:4px; font-size:0.85em;">
+                    <p><code>{{thread}}</code> — Full formatted chat history</p>
+                    <p><code>{{lastusermessage}}</code> — Raw last user message</p>
+                    <p><code>{{lastusermessageformatted}}</code> — Last user message with header + XML tags</p>
+                </div>
+
+                <hr />
                 <h4>Regex Rules</h4>
                 <div id="cthr-regexList"></div>
                 <div class="menu_button" id="cthr-addRegex">+ Add Regex Rule</div>
 
                 <hr />
-                <h4>Available Macros</h4>
-                <p style="color:#aaa; font-size:0.9em;">
-                    <code>{{thread}}</code> — Full formatted chat history<br/>
-                    <code>{{lastMessage}}</code> — Last user message (with regex applied)
-                </p>
-
-                <hr />
                 <h4>Preview</h4>
-                <div style="display:flex; gap:8px;">
-                    <div class="menu_button" id="cthr-preview">Preview Thread</div>
-                    <div class="menu_button" id="cthr-previewLastMsg">Preview Last Message</div>
-                </div>
+                <div class="menu_button" id="cthr-preview">Preview Thread</div>
                 <pre id="cthr-previewOutput" style="display:none; max-height:300px; overflow-y:auto; background:#1a1a1a; padding:8px; border-radius:4px; font-size:0.85em; white-space:pre-wrap;"></pre>
+
+                <div class="menu_button" id="cthr-previewLastUser">Preview Last User Message</div>
+                <pre id="cthr-previewLastUserOutput" style="display:none; max-height:150px; overflow-y:auto; background:#1a1a1a; padding:8px; border-radius:4px; font-size:0.85em; white-space:pre-wrap;"></pre>
 
             </div>
         </div>
@@ -287,7 +298,7 @@ function createSettingsUI() {
     // Load checkbox states
     $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
     $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
-    $("#cthr-excludeLastUserMessage").prop("checked", config.excludeLastUserMessage);
+    $("#cthr-excludeLastUser").prop("checked", config.excludeLastUserFromThread);
 
     // --- Event Handlers ---
 
@@ -306,24 +317,26 @@ function createSettingsUI() {
     // Checkboxes
     $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
     $("#cthr-softTokenLimit").on("change", function() { saveSetting("softTokenLimit", $(this).is(":checked")); });
-    $("#cthr-excludeLastUserMessage").on("change", function() { saveSetting("excludeLastUserMessage", $(this).is(":checked")); });
+    $("#cthr-excludeLastUser").on("change", function() { saveSetting("excludeLastUserFromThread", $(this).is(":checked")); });
 
     // Regex
     $("#cthr-addRegex").on("click", addRegexRule);
     renderRegexRules();
 
-    // Preview
+    // Preview - Thread
     $("#cthr-preview").on("click", function() {
         const output = $("#cthr-previewOutput");
         output.text(buildThread());
-        output.show();
+        output.toggle();
     });
 
-    $("#cthr-previewLastMsg").on("click", function() {
-        const output = $("#cthr-previewOutput");
-        const lastMsg = getLastUserMessage();
-        output.text(lastMsg || "(No user message found)");
-        output.show();
+    // Preview - Last User Message
+    $("#cthr-previewLastUser").on("click", function() {
+        const output = $("#cthr-previewLastUserOutput");
+        const raw = getLastUserMessage();
+        const formatted = getLastUserMessageFormatted();
+        output.text(`--- Raw ---\n${raw}\n\n--- Formatted ---\n${formatted}`);
+        output.toggle();
     });
 }
 
