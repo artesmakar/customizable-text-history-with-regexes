@@ -1,316 +1,379 @@
-import { chat } from "../../../../script.js";
-import { extension_settings, saveMetadataDebounced } from "../../../extensions.js";
-import { MacrosParser } from "../../../macros.js";
+// Chat to Roleplay Plugin for SillyTavern
+// Transforms chat messages into roleplay format with customizable XML tags
 
-const extensionName = "custom-threader";
+(function() {
+    const extensionName = "chat-to-roleplay";
+    const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 
-const defaultSettings = {
-    userName: "Student",
-    assistantName: "Teacher",
-    userHeader: "## Student's Turn",
-    assistantHeader: "## Teacher's Turn",
-    xmlUserTag: "student",
-    xmlAssistantTag: "teacher",
-    skipLastAssistant: true,
-    maxTokens: 0,
-    charsPerToken: 4,
-    softTokenLimit: false,
-    removeLastUserFromHistory: false,
-    regexRules: []
-};
+    const defaultSettings = {
+        userName: "Student",
+        assistantName: "Teacher",
+        userHeader: "## Student's Turn",
+        assistantHeader: "## Teacher's Turn",
+        xmlUserTag: "student",
+        xmlAssistantTag: "teacher",
+        skipLastAssistant: true,
+        maxTokens: 0,
+        charsPerToken: 4,
+        softTokenLimit: false,
+        excludeLastUserMessage: false,
+        regexRules: []
+    };
 
-function getConfig() {
-    return extension_settings[extensionName] || defaultSettings;
-}
+    let extensionSettings = {};
 
-function saveSetting(key, value) {
-    if (!extension_settings[extensionName]) {
-        extension_settings[extensionName] = { ...defaultSettings };
+    // Estimate tokens based on character count
+    function estimateTokens(text) {
+        if (!text) return 0;
+        const config = getConfig();
+        const charsPerToken = config.charsPerToken || 4;
+        return Math.ceil(text.length / charsPerToken);
     }
-    extension_settings[extensionName][key] = value;
-    saveMetadataDebounced();
-}
 
-function estimateTokens(text) {
-    if (!text) return 0;
-    const config = getConfig();
-    return Math.ceil(text.length / config.charsPerToken);
-}
+    // Get config with defaults
+    function getConfig() {
+        return Object.assign({}, defaultSettings, extensionSettings);
+    }
 
-function applyRegex(text) {
-    const config = getConfig();
-    if (!config.regexRules || config.regexRules.length === 0) return text;
+    // Save a setting
+    function saveSetting(key, value) {
+        extensionSettings[key] = value;
+        saveSettingsDebounced();
+    }
 
-    let result = text;
-    for (const rule of config.regexRules) {
-        if (!rule.enabled) continue;
-        try {
-            const regex = new RegExp(rule.find, rule.flags || "g");
-            result = result.replace(regex, rule.replace);
-        } catch (e) {
-            console.error(`[${extensionName}] Regex error:`, e);
+    // Get chat history with optional skip logic and token limit
+    function getChatHistory(excludeLastUser = false) {
+        const config = getConfig();
+        let messages = [...chat];
+
+        // Skip last assistant message if enabled
+        if (config.skipLastAssistant && messages.length > 0) {
+            const lastMsg = messages[messages.length - 1];
+            if (!lastMsg.is_user) {
+                messages = messages.slice(0, -1);
+            }
         }
-    }
-    return result;
-}
 
-function getLastUserMessage() {
-    if (!chat || chat.length === 0) return "";
-
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (chat[i].is_user) {
-            return chat[i].mes || "";
+        // Exclude last user message if requested
+        if (excludeLastUser && messages.length > 0) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i].is_user) {
+                    messages.splice(i, 1);
+                    break;
+                }
+            }
         }
-    }
-    return "";
-}
 
-function getChatHistory() {
-    const config = getConfig();
-    let messages = [...chat];
+        // Apply token limit (0 = unlimited)
+        if (config.maxTokens > 0) {
+            const limitedMessages = [];
+            let totalTokens = 0;
 
-    // Skip last assistant message if enabled
-    if (config.skipLastAssistant && messages.length > 0) {
-        const lastMsg = messages[messages.length - 1];
-        if (!lastMsg.is_user) {
-            messages = messages.slice(0, -1);
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                const msgTokens = estimateTokens(msg.mes);
+
+                if (config.softTokenLimit) {
+                    limitedMessages.unshift(msg);
+                    totalTokens += msgTokens;
+
+                    if (totalTokens >= config.maxTokens) {
+                        break;
+                    }
+                } else {
+                    if (totalTokens + msgTokens > config.maxTokens) {
+                        break;
+                    }
+
+                    limitedMessages.unshift(msg);
+                    totalTokens += msgTokens;
+                }
+            }
+
+            return limitedMessages;
         }
+
+        return messages;
     }
 
-    // Remove last user message from history if enabled
-    if (config.removeLastUserFromHistory) {
+    // Get the last user message
+    function getLastUserMessage() {
+        const messages = [...chat];
         for (let i = messages.length - 1; i >= 0; i--) {
             if (messages[i].is_user) {
-                messages.splice(i, 1);
-                break;
+                return messages[i].mes;
             }
         }
+        return "";
     }
 
-    // Apply token limit (0 = unlimited)
-    if (config.maxTokens > 0) {
-        const limitedMessages = [];
-        let totalTokens = 0;
+    // Apply regex rules to text
+    function applyRegexRules(text) {
+        const config = getConfig();
+        let result = text;
 
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
-            const msgTokens = estimateTokens(msg.mes);
+        for (const rule of config.regexRules) {
+            if (!rule.enabled || !rule.pattern) continue;
 
-            if (config.softTokenLimit) {
-                // Soft: include the message that crosses, then stop
-                limitedMessages.unshift(msg);
-                totalTokens += msgTokens;
-                if (totalTokens >= config.maxTokens) break;
-            } else {
-                // Hard: stop before exceeding
-                if (totalTokens + msgTokens > config.maxTokens) break;
-                limitedMessages.unshift(msg);
-                totalTokens += msgTokens;
+            try {
+                const flags = rule.flags || 'g';
+                const regex = new RegExp(rule.pattern, flags);
+                result = result.replace(regex, rule.replacement || '');
+            } catch (e) {
+                console.error(`Invalid regex pattern: ${rule.pattern}`, e);
             }
         }
 
-        messages = limitedMessages;
+        return result;
     }
 
-    // Format messages
-    const formatted = messages.map(msg => {
-        const isUser = msg.is_user;
-        const name = isUser ? config.userName : config.assistantName;
-        const header = isUser ? config.userHeader : config.assistantHeader;
+    // Format a single message with XML tags and headers
+    function formatMessage(message, isUser) {
+        const config = getConfig();
+
         const tag = isUser ? config.xmlUserTag : config.xmlAssistantTag;
+        const header = isUser ? config.userHeader : config.assistantHeader;
+        const name = isUser ? config.userName : config.assistantName;
 
-        let text = applyRegex(msg.mes || "");
+        let content = message;
+        content = applyRegexRules(content);
 
-        let parts = [];
-        if (header) parts.push(header);
-        parts.push(`${name}: ${text}`);
-        let content = parts.join("\n");
+        let formatted = "";
+
+        if (header) {
+            formatted += `${header}\n`;
+        }
 
         if (tag) {
-            content = `<${tag}_message>\n${content}\n</${tag}_message>`;
+            formatted += `<${tag}_message>\n${content}\n</${tag}_message>`;
+        } else {
+            formatted += content;
         }
 
-        return content;
-    });
+        return formatted;
+    }
 
-    return formatted.join("\n\n");
-}
+    // Generate the full formatted chat
+    function generateFormattedChat() {
+        const config = getConfig();
+        const messages = getChatHistory(config.excludeLastUserMessage);
+        const formattedMessages = [];
 
-function createSettingsUI() {
-    const config = getConfig();
+        for (const msg of messages) {
+            const formatted = formatMessage(msg.mes, msg.is_user);
+            formattedMessages.push(formatted);
+        }
 
-    const html = `
-    <div id="cthr-settings" class="extension_settings">
-        <div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Custom Threader</b>
-                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-            </div>
-            <div class="inline-drawer-content">
+        return formattedMessages.join("\n\n");
+    }
 
-                <h4>Naming</h4>
-                <label>User Name</label>
-                <input id="cthr-userName" class="text_pole" type="text" value="${config.userName}" />
-                <label>Assistant Name</label>
-                <input id="cthr-assistantName" class="text_pole" type="text" value="${config.assistantName}" />
+    // Register macros
+    function registerMacros() {
+        if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+            const context = SillyTavern.getContext();
 
-                <h4>Headers</h4>
-                <label>User Header</label>
-                <input id="cthr-userHeader" class="text_pole" type="text" value="${config.userHeader}" />
-                <label>Assistant Header</label>
-                <input id="cthr-assistantHeader" class="text_pole" type="text" value="${config.assistantHeader}" />
+            if (context.registerMacro) {
+                context.registerMacro('chatToRoleplay', () => generateFormattedChat());
+                context.registerMacro('lastUserMessage', () => getLastUserMessage());
+                console.log("[Chat-to-Roleplay] Macros registered: {{chatToRoleplay}}, {{lastUserMessage}}");
+            }
+        }
+    }
 
-                <h4>XML Tags</h4>
-                <label>User Tag (empty = no wrapping)</label>
-                <input id="cthr-xmlUserTag" class="text_pole" type="text" value="${config.xmlUserTag}" />
-                <label>Assistant Tag (empty = no wrapping)</label>
-                <input id="cthr-xmlAssistantTag" class="text_pole" type="text" value="${config.xmlAssistantTag}" />
+    // Create settings UI
+    function createSettingsUI() {
+        const config = getConfig();
 
-                <h4>Token Limit</h4>
-                <label>Max Tokens (0 = unlimited)</label>
-                <input id="cthr-maxTokens" class="text_pole" type="number" value="${config.maxTokens}" min="0" />
-                <label>Characters per Token (estimation ratio)</label>
-                <input id="cthr-charsPerToken" class="text_pole" type="number" value="${config.charsPerToken}" min="1" step="0.5" />
+        const settingsHtml = `
+            <div id="chat-to-roleplay-settings" class="extension_settings">
+                <div class="inline-drawer">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b>Chat to Roleplay</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <div class="chat-to-roleplay-settings-content">
+                            <h4>Names</h4>
+                            <label>User Name:</label>
+                            <input id="cthr-userName" type="text" class="text_pole" placeholder="Student" />
 
-                <h4>Options</h4>
-                <label class="checkbox_label">
-                    <input id="cthr-skipLastAssistant" type="checkbox" />
-                    <span>Skip last assistant message (fixes swipe issue)</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="cthr-softTokenLimit" type="checkbox" />
-                    <span>Soft token limit (include message that exceeds limit)</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="cthr-removeLastUserFromHistory" type="checkbox" />
-                    <span>Remove last user message from {{history}}</span>
-                </label>
+                            <label>Assistant Name:</label>
+                            <input id="cthr-assistantName" type="text" class="text_pole" placeholder="Teacher" />
 
-                <h4>Macros</h4>
-                <div class="cthr-macro-info" style="font-size: 0.9em; margin-bottom: 10px; padding: 8px; background: var(--SmartThemeBlurTintColor); border-radius: 5px;">
-                    <div><code>{{historyEXT}}</code> — formatted chat history</div>
-                    <div><code>{{lastmessageEXT}}</code> — last user message (raw text)</div>
-                </div>
+                            <hr>
+                            <h4>Headers</h4>
+                            <label>User Header:</label>
+                            <input id="cthr-userHeader" type="text" class="text_pole" placeholder="## Student's Turn" />
 
-                <h4>Regex Rules</h4>
-                <div id="cthr-regexList"></div>
-                <div class="cthr-regexControls" style="margin-top: 5px;">
-                    <input id="cthr-regexFind" class="text_pole" type="text" placeholder="Find (regex pattern)" />
-                    <input id="cthr-regexReplace" class="text_pole" type="text" placeholder="Replace with" />
-                    <input id="cthr-regexFlags" class="text_pole" type="text" placeholder="Flags (default: g)" value="g" style="width: 60px;" />
-                    <div id="cthr-addRegex" class="menu_button menu_button_icon" style="margin-top: 5px;">
-                        <div class="fa-solid fa-plus"></div>
-                        <span>Add Rule</span>
+                            <label>Assistant Header:</label>
+                            <input id="cthr-assistantHeader" type="text" class="text_pole" placeholder="## Teacher's Turn" />
+
+                            <hr>
+                            <h4>XML Tags</h4>
+                            <label>User XML Tag:</label>
+                            <input id="cthr-xmlUserTag" type="text" class="text_pole" placeholder="student" />
+                            <small>Creates <student_message> tags</small>
+
+                            <label>Assistant XML Tag:</label>
+                            <input id="cthr-xmlAssistantTag" type="text" class="text_pole" placeholder="teacher" />
+                            <small>Creates <teacher_message> tags</small>
+
+                            <hr>
+                            <h4>Token Limit</h4>
+                            <label>Max Tokens (0 = unlimited):</label>
+                            <input id="cthr-maxTokens" type="number" class="text_pole" placeholder="0" min="0" />
+
+                            <label>Characters per Token:</label>
+                            <input id="cthr-charsPerToken" type="number" class="text_pole" placeholder="4" min="1" />
+                            <small>Used for token estimation (default: 4)</small>
+
+                            <hr>
+                            <h4>Options</h4>
+                            <label class="checkbox_label">
+                                <input id="cthr-skipLastAssistant" type="checkbox" />
+                                <span>Skip last assistant message (fixes swipe issue)</span>
+                            </label>
+
+                            <label class="checkbox_label">
+                                <input id="cthr-softTokenLimit" type="checkbox" />
+                                <span>Soft token limit (include message that exceeds limit)</span>
+                            </label>
+
+                            <label class="checkbox_label">
+                                <input id="cthr-excludeLastUserMessage" type="checkbox" />
+                                <span>Exclude last user message from history</span>
+                            </label>
+                            <small>Use {{lastUserMessage}} macro separately when enabled</small>
+
+                            <hr>
+                            <h4>Regex Rules</h4>
+                            <div id="cthr-regexRules"></div>
+                            <button id="cthr-addRegex" class="menu_button">
+                                <i class="fa-solid fa-plus"></i> Add Regex Rule
+                            </button>
+
+                            <hr>
+                            <h4>Macros</h4>
+                            <small>Use <code>{{chatToRoleplay}}</code> in your prompts</small><br>
+                            <small>Use <code>{{lastUserMessage}}</code> for user's last message</small>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-    </div>`;
+        `;
 
-    $("#extensions_settings2").append(html);
+        $("#extensions_settings").append(settingsHtml);
 
-    // Load checkbox states
-    $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
-    $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
-    $("#cthr-removeLastUserFromHistory").prop("checked", config.removeLastUserFromHistory);
+        // Load current values
+        $("#cthr-userName").val(config.userName);
+        $("#cthr-assistantName").val(config.assistantName);
+        $("#cthr-userHeader").val(config.userHeader);
+        $("#cthr-assistantHeader").val(config.assistantHeader);
+        $("#cthr-xmlUserTag").val(config.xmlUserTag);
+        $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
+        $("#cthr-maxTokens").val(config.maxTokens);
+        $("#cthr-charsPerToken").val(config.charsPerToken);
+        $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
+        $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
+        $("#cthr-excludeLastUserMessage").prop("checked", config.excludeLastUserMessage);
 
-    // Text input handlers
-    $("#cthr-userName").on("input", function () { saveSetting("userName", $(this).val()); });
-    $("#cthr-assistantName").on("input", function () { saveSetting("assistantName", $(this).val()); });
-    $("#cthr-userHeader").on("input", function () { saveSetting("userHeader", $(this).val()); });
-    $("#cthr-assistantHeader").on("input", function () { saveSetting("assistantHeader", $(this).val()); });
-    $("#cthr-xmlUserTag").on("input", function () { saveSetting("xmlUserTag", $(this).val()); });
-    $("#cthr-xmlAssistantTag").on("input", function () { saveSetting("xmlAssistantTag", $(this).val()); });
-    $("#cthr-maxTokens").on("input", function () { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
-    $("#cthr-charsPerToken").on("input", function () { saveSetting("charsPerToken", parseFloat($(this).val()) || 4); });
+        // Event handlers
+        $("#cthr-userName").on("input", function() { saveSetting("userName", $(this).val()); });
+        $("#cthr-assistantName").on("input", function() { saveSetting("assistantName", $(this).val()); });
+        $("#cthr-userHeader").on("input", function() { saveSetting("userHeader", $(this).val()); });
+        $("#cthr-assistantHeader").on("input", function() { saveSetting("assistantHeader", $(this).val()); });
+        $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
+        $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
+        $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
+        $("#cthr-charsPerToken").on("input", function() { saveSetting("charsPerToken", parseInt($(this).val()) || 4); });
+        $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
+        $("#cthr-softTokenLimit").on("change", function() { saveSetting("softTokenLimit", $(this).is(":checked")); });
+        $("#cthr-excludeLastUserMessage").on("change", function() { saveSetting("excludeLastUserMessage", $(this).is(":checked")); });
 
-    // Checkbox handlers
-    $("#cthr-skipLastAssistant").on("change", function () { saveSetting("skipLastAssistant", $(this).is(":checked")); });
-    $("#cthr-softTokenLimit").on("change", function () { saveSetting("softTokenLimit", $(this).is(":checked")); });
-    $("#cthr-removeLastUserFromHistory").on("change", function () { saveSetting("removeLastUserFromHistory", $(this).is(":checked")); });
+        // Regex rule management
+        function renderRegexRules() {
+            const rulesConfig = getConfig().regexRules || [];
+            const container = $("#cthr-regexRules");
+            container.empty();
 
-    // Regex handlers
-    $("#cthr-addRegex").on("click", function () {
-        const find = $("#cthr-regexFind").val();
-        const replace = $("#cthr-regexReplace").val();
-        const flags = $("#cthr-regexFlags").val() || "g";
+            rulesConfig.forEach((rule, index) => {
+                const ruleHtml = `
+                    <div class="cthr-regex-rule" data-index="${index}" style="border: 1px solid #555; padding: 8px; margin: 5px 0; border-radius: 4px;">
+                        <label class="checkbox_label">
+                            <input type="checkbox" class="cthr-regex-enabled" ${rule.enabled ? 'checked' : ''} />
+                            <span>Enabled</span>
+                        </label>
+                        <input type="text" class="text_pole cthr-regex-pattern" placeholder="Regex pattern" value="${rule.pattern || ''}" />
+                        <input type="text" class="text_pole cthr-regex-replacement" placeholder="Replacement" value="${rule.replacement || ''}" />
+                        <input type="text" class="text_pole cthr-regex-flags" placeholder="Flags (default: g)" value="${rule.flags || 'g'}" style="width: 60px;" />
+                        <button class="menu_button cthr-regex-delete" title="Delete">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>
+                `;
+                container.append(ruleHtml);
+            });
 
-        if (!find) return;
+            // Rule event handlers
+            $(".cthr-regex-enabled").off("change").on("change", function() {
+                const index = $(this).closest(".cthr-regex-rule").data("index");
+                const rules = getConfig().regexRules || [];
+                rules[index].enabled = $(this).is(":checked");
+                saveSetting("regexRules", rules);
+            });
 
-        const config = getConfig();
-        if (!config.regexRules) config.regexRules = [];
+            $(".cthr-regex-pattern").off("input").on("input", function() {
+                const index = $(this).closest(".cthr-regex-rule").data("index");
+                const rules = getConfig().regexRules || [];
+                rules[index].pattern = $(this).val();
+                saveSetting("regexRules", rules);
+            });
 
-        config.regexRules.push({ find, replace, flags, enabled: true });
-        saveSetting("regexRules", config.regexRules);
+            $(".cthr-regex-replacement").off("input").on("input", function() {
+                const index = $(this).closest(".cthr-regex-rule").data("index");
+                const rules = getConfig().regexRules || [];
+                rules[index].replacement = $(this).val();
+                saveSetting("regexRules", rules);
+            });
 
-        $("#cthr-regexFind").val("");
-        $("#cthr-regexReplace").val("");
-        $("#cthr-regexFlags").val("g");
+            $(".cthr-regex-flags").off("input").on("input", function() {
+                const index = $(this).closest(".cthr-regex-rule").data("index");
+                const rules = getConfig().regexRules || [];
+                rules[index].flags = $(this).val();
+                saveSetting("regexRules", rules);
+            });
 
-        renderRegexList();
-    });
-
-    renderRegexList();
-}
-
-function renderRegexList() {
-    const config = getConfig();
-    const container = $("#cthr-regexList");
-    container.empty();
-
-    if (!config.regexRules || config.regexRules.length === 0) {
-        container.append('<div style="opacity: 0.5; font-style: italic;">No regex rules</div>');
-        return;
-    }
-
-    config.regexRules.forEach((rule, index) => {
-        const ruleHtml = `
-        <div class="cthr-regex-rule" style="display: flex; align-items: center; gap: 5px; margin-bottom: 3px; padding: 4px; background: var(--SmartThemeBlurTintColor); border-radius: 3px;">
-            <input type="checkbox" class="cthr-regexToggle" data-index="${index}" ${rule.enabled ? "checked" : ""} />
-            <span style="flex: 1; font-size: 0.85em; font-family: monospace; overflow: hidden; text-overflow: ellipsis;">
-                /${rule.find}/${rule.flags} → ${rule.replace || "(empty)"}
-            </span>
-            <div class="cthr-deleteRegex menu_button menu_button_icon" data-index="${index}" style="padding: 2px 5px;">
-                <div class="fa-solid fa-trash"></div>
-            </div>
-        </div>`;
-        container.append(ruleHtml);
-    });
-
-    $(".cthr-regexToggle").on("change", function () {
-        const idx = $(this).data("index");
-        const config = getConfig();
-        config.regexRules[idx].enabled = $(this).is(":checked");
-        saveSetting("regexRules", config.regexRules);
-    });
-
-    $(".cthr-deleteRegex").on("click", function () {
-        const idx = $(this).data("index");
-        const config = getConfig();
-        config.regexRules.splice(idx, 1);
-        saveSetting("regexRules", config.regexRules);
-        renderRegexList();
-    });
-}
-
-jQuery(async () => {
-    if (!extension_settings[extensionName]) {
-        extension_settings[extensionName] = { ...defaultSettings };
-    }
-
-    // Fill in any missing defaults
-    for (const key in defaultSettings) {
-        if (extension_settings[extensionName][key] === undefined) {
-            extension_settings[extensionName][key] = defaultSettings[key];
+            $(".cthr-regex-delete").off("click").on("click", function() {
+                const index = $(this).closest(".cthr-regex-rule").data("index");
+                const rules = getConfig().regexRules || [];
+                rules.splice(index, 1);
+                saveSetting("regexRules", rules);
+                renderRegexRules();
+            });
         }
+
+        $("#cthr-addRegex").on("click", function() {
+            const rules = getConfig().regexRules || [];
+            rules.push({ enabled: true, pattern: "", replacement: "", flags: "g" });
+            saveSetting("regexRules", rules);
+            renderRegexRules();
+        });
+
+        renderRegexRules();
     }
 
-    createSettingsUI();
+    // Initialize extension
+    jQuery(async () => {
+        if (extension_settings[extensionName]) {
+            extensionSettings = extension_settings[extensionName];
+        } else {
+            extension_settings[extensionName] = {};
+            extensionSettings = extension_settings[extensionName];
+        }
 
-    // Register macros
-MacrosParser.registerMacro("historyEXT", () => getChatHistory());
-MacrosParser.registerMacro("lastmessageEXT", () => getLastUserMessage());
+        createSettingsUI();
+        registerMacros();
 
-    console.log(`[${extensionName}] Loaded successfully.`);
-});
-
+        console.log("[Chat-to-Roleplay] Extension loaded!");
+    });
+})();
