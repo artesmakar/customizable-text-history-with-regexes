@@ -14,6 +14,7 @@ const defaultSettings = {
     xmlUserTag: "student",
     xmlAssistantTag: "teacher",
     skipLastAssistant: true,
+    skipLastUser: false,
     maxTokens: 0,
     charsPerToken: 4,
     softTokenLimit: false,
@@ -49,6 +50,16 @@ function estimateTokens(text) {
     return Math.ceil(text.length / config.charsPerToken);
 }
 
+// Get the last user message from the full chat (before any filtering)
+function getLastUserMessage() {
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i].is_user) {
+            return chat[i];
+        }
+    }
+    return null;
+}
+
 // Get chat history with optional skip logic and token limit
 function getChatHistory() {
     const config = getConfig();
@@ -59,6 +70,16 @@ function getChatHistory() {
         const lastMsg = messages[messages.length - 1];
         if (!lastMsg.is_user) {
             messages = messages.slice(0, -1);
+        }
+    }
+
+    // Skip last user message if enabled (find and remove the last one)
+    if (config.skipLastUser && messages.length > 0) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].is_user) {
+                messages.splice(i, 1);
+                break;
+            }
         }
     }
 
@@ -294,6 +315,11 @@ function createSettingsUI() {
                     </label>
 
                     <label class="checkbox_label">
+                        <input id="cthr-skipLastUser" type="checkbox" />
+                        <span>Skip last user message from history (use with lastUserMsg macros)</span>
+                    </label>
+
+                    <label class="checkbox_label">
                         <input id="cthr-softTokenLimit" type="checkbox" />
                         <span>Soft token limit (include message that exceeds limit)</span>
                     </label>
@@ -320,7 +346,7 @@ function createSettingsUI() {
 
                     <hr />
                     <div class="cthr-macros">
-                        <b>Available Macros:</b>
+                        <b>Available Macros — History:</b>
                         <code>{{headerHistoryR}}</code>
                         <code>{{colonHistoryR}}</code>
                         <code>{{xmlHistoryR}}</code>
@@ -329,6 +355,14 @@ function createSettingsUI() {
                         <code>{{quoteHistoryR}}</code>
                         <code>{{lastNR::5}}</code>
                         <code>{{rawHistoryR}}</code>
+                        <br/>
+                        <b>Available Macros — Last User Message:</b>
+                        <code>{{lastUserMsgR}}</code>
+                        <code>{{lastUserMsgColonR}}</code>
+                        <code>{{lastUserMsgHeaderR}}</code>
+                        <code>{{lastUserMsgXmlR}}</code>
+                        <code>{{lastUserMsgBracketR}}</code>
+                        <p class="cthr-hint">Enable "Skip last user message from history" to avoid duplicating it in the history macros above.</p>
                     </div>
                 </div>
             </div>
@@ -365,6 +399,7 @@ function createSettingsUI() {
     $("#cthr-xmlUserTag").val(config.xmlUserTag);
     $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
     $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
+    $("#cthr-skipLastUser").prop("checked", config.skipLastUser);
     $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
     $("#cthr-maxTokens").val(config.maxTokens);
     $("#cthr-charsPerToken").val(config.charsPerToken);
@@ -376,6 +411,7 @@ function createSettingsUI() {
     $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
     $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
+    $("#cthr-skipLastUser").on("change", function() { saveSetting("skipLastUser", $(this).is(":checked")); });
     $("#cthr-softTokenLimit").on("change", function() { saveSetting("softTokenLimit", $(this).is(":checked")); });
     $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
     $("#cthr-charsPerToken").on("input", function() { saveSetting("charsPerToken", parseFloat($(this).val()) || 4); });
@@ -386,6 +422,8 @@ function createSettingsUI() {
 }
 
 function registerMacros() {
+    // ===== HISTORY MACROS =====
+
     MacrosParser.registerMacro('headerHistoryR', () => {
         const c = getConfig();
         const messages = getChatHistory();
@@ -461,6 +499,46 @@ function registerMacros() {
     MacrosParser.registerMacro('rawHistoryR', () => {
         const messages = getChatHistory();
         const raw = messages.map(msg => msg.mes).join('\n\n---\n\n');
+        return applyRegexRules(raw);
+    });
+
+    // ===== LAST USER MESSAGE MACROS =====
+
+    MacrosParser.registerMacro('lastUserMsgR', () => {
+        const msg = getLastUserMessage();
+        if (!msg) return '';
+        return applyRegexRules(msg.mes);
+    });
+
+    MacrosParser.registerMacro('lastUserMsgColonR', () => {
+        const c = getConfig();
+        const msg = getLastUserMessage();
+        if (!msg) return '';
+        const raw = `${c.userName}: ${msg.mes}`;
+        return applyRegexRules(raw);
+    });
+
+    MacrosParser.registerMacro('lastUserMsgHeaderR', () => {
+        const c = getConfig();
+        const msg = getLastUserMessage();
+        if (!msg) return '';
+        const raw = `${c.userHeader}\n${msg.mes}`;
+        return applyRegexRules(raw);
+    });
+
+    MacrosParser.registerMacro('lastUserMsgXmlR', () => {
+        const c = getConfig();
+        const msg = getLastUserMessage();
+        if (!msg) return '';
+        const raw = `<${c.xmlUserTag}>\n${msg.mes}\n</${c.xmlUserTag}>`;
+        return applyRegexRules(raw);
+    });
+
+    MacrosParser.registerMacro('lastUserMsgBracketR', () => {
+        const c = getConfig();
+        const msg = getLastUserMessage();
+        if (!msg) return '';
+        const raw = `[${c.userName}]\n${msg.mes}\n[/${c.userName}]`;
         return applyRegexRules(raw);
     });
 }
