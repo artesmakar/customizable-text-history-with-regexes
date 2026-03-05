@@ -13,6 +13,7 @@ const defaultSettings = {
     assistantHeader: "## Teacher's Turn",
     xmlUserTag: "student",
     xmlAssistantTag: "teacher",
+    excludeLastAssistantFromHistory: true,
     skipLastAssistant: true,
     skipLastUser: false,
     maxTokens: 0,
@@ -28,6 +29,15 @@ function loadSettings() {
         if (extension_settings[extensionName][key] === undefined) {
             extension_settings[extensionName][key] = Array.isArray(value) ? [...value] : value;
         }
+    }
+
+    // Backward compatibility:
+    // If the new setting was never saved, inherit the previous skipLastAssistant behavior.
+    if (extension_settings[extensionName].excludeLastAssistantFromHistory === undefined) {
+        extension_settings[extensionName].excludeLastAssistantFromHistory =
+            extension_settings[extensionName].skipLastAssistant !== undefined
+                ? extension_settings[extensionName].skipLastAssistant
+                : defaultSettings.excludeLastAssistantFromHistory;
     }
 }
 
@@ -60,13 +70,23 @@ function getLastUserMessage() {
     return null;
 }
 
+// Get the last assistant message from the full chat (before any filtering)
+function getLastAssistantMessage() {
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (!chat[i].is_user) {
+            return chat[i];
+        }
+    }
+    return null;
+}
+
 // Get chat history with optional skip logic and token limit
 function getChatHistory() {
     const config = getConfig();
     let messages = [...chat];
 
-    // Skip last assistant message if enabled
-    if (config.skipLastAssistant && messages.length > 0) {
+    // Skip latest assistant message from history if enabled
+    if (config.excludeLastAssistantFromHistory && messages.length > 0) {
         const lastMsg = messages[messages.length - 1];
         if (!lastMsg.is_user) {
             messages = messages.slice(0, -1);
@@ -310,8 +330,8 @@ function createSettingsUI() {
 
                     <h4>Options</h4>
                     <label class="checkbox_label">
-                        <input id="cthr-skipLastAssistant" type="checkbox" />
-                        <span>Skip last assistant message (fixes swipe issue)</span>
+                        <input id="cthr-excludeLastAssistantFromHistory" type="checkbox" />
+                        <span>Exclude latest assistant message from history (use with lastAssistantMsg macros)</span>
                     </label>
 
                     <label class="checkbox_label">
@@ -363,6 +383,13 @@ function createSettingsUI() {
                         <code>{{lastUserMsgXmlR}}</code>
                         <code>{{lastUserMsgBracketR}}</code>
                         <p class="cthr-hint">Enable "Skip last user message from history" to avoid duplicating it in the history macros above.</p>
+                        <b>Available Macros — Last Assistant Message:</b>
+                        <code>{{lastAssistantMsgR}}</code>
+                        <code>{{lastAssistantMsgColonR}}</code>
+                        <code>{{lastAssistantMsgHeaderR}}</code>
+                        <code>{{lastAssistantMsgXmlR}}</code>
+                        <code>{{lastAssistantMsgBracketR}}</code>
+                        <p class="cthr-hint">Enable "Exclude latest assistant message from history" to avoid duplicating it in the history macros above.</p>
                     </div>
                 </div>
             </div>
@@ -398,7 +425,7 @@ function createSettingsUI() {
     $("#cthr-assistantHeader").val(config.assistantHeader);
     $("#cthr-xmlUserTag").val(config.xmlUserTag);
     $("#cthr-xmlAssistantTag").val(config.xmlAssistantTag);
-    $("#cthr-skipLastAssistant").prop("checked", config.skipLastAssistant);
+    $("#cthr-excludeLastAssistantFromHistory").prop("checked", config.excludeLastAssistantFromHistory);
     $("#cthr-skipLastUser").prop("checked", config.skipLastUser);
     $("#cthr-softTokenLimit").prop("checked", config.softTokenLimit);
     $("#cthr-maxTokens").val(config.maxTokens);
@@ -410,7 +437,12 @@ function createSettingsUI() {
     $("#cthr-assistantHeader").on("input", function() { saveSetting("assistantHeader", $(this).val()); });
     $("#cthr-xmlUserTag").on("input", function() { saveSetting("xmlUserTag", $(this).val()); });
     $("#cthr-xmlAssistantTag").on("input", function() { saveSetting("xmlAssistantTag", $(this).val()); });
-    $("#cthr-skipLastAssistant").on("change", function() { saveSetting("skipLastAssistant", $(this).is(":checked")); });
+    $("#cthr-excludeLastAssistantFromHistory").on("change", function() {
+        const checked = $(this).is(":checked");
+        saveSetting("excludeLastAssistantFromHistory", checked);
+        // Keep legacy key synchronized for compatibility with existing settings snapshots.
+        saveSetting("skipLastAssistant", checked);
+    });
     $("#cthr-skipLastUser").on("change", function() { saveSetting("skipLastUser", $(this).is(":checked")); });
     $("#cthr-softTokenLimit").on("change", function() { saveSetting("softTokenLimit", $(this).is(":checked")); });
     $("#cthr-maxTokens").on("input", function() { saveSetting("maxTokens", parseInt($(this).val()) || 0); });
@@ -539,6 +571,46 @@ function registerMacros() {
         const msg = getLastUserMessage();
         if (!msg) return '';
         const raw = `[${c.userName}]\n${msg.mes}\n[/${c.userName}]`;
+        return applyRegexRules(raw);
+    });
+
+    // ===== LAST ASSISTANT MESSAGE MACROS =====
+
+    MacrosParser.registerMacro('lastAssistantMsgR', () => {
+        const msg = getLastAssistantMessage();
+        if (!msg) return '';
+        return applyRegexRules(msg.mes);
+    });
+
+    MacrosParser.registerMacro('lastAssistantMsgColonR', () => {
+        const c = getConfig();
+        const msg = getLastAssistantMessage();
+        if (!msg) return '';
+        const raw = `${c.assistantName}: ${msg.mes}`;
+        return applyRegexRules(raw);
+    });
+
+    MacrosParser.registerMacro('lastAssistantMsgHeaderR', () => {
+        const c = getConfig();
+        const msg = getLastAssistantMessage();
+        if (!msg) return '';
+        const raw = `${c.assistantHeader}\n${msg.mes}`;
+        return applyRegexRules(raw);
+    });
+
+    MacrosParser.registerMacro('lastAssistantMsgXmlR', () => {
+        const c = getConfig();
+        const msg = getLastAssistantMessage();
+        if (!msg) return '';
+        const raw = `<${c.xmlAssistantTag}>\n${msg.mes}\n</${c.xmlAssistantTag}>`;
+        return applyRegexRules(raw);
+    });
+
+    MacrosParser.registerMacro('lastAssistantMsgBracketR', () => {
+        const c = getConfig();
+        const msg = getLastAssistantMessage();
+        if (!msg) return '';
+        const raw = `[${c.assistantName}]\n${msg.mes}\n[/${c.assistantName}]`;
         return applyRegexRules(raw);
     });
 }
